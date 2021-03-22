@@ -11,53 +11,42 @@ namespace DeltaQuery.Authentication
 {
     public class DeviceCodeAuthProvider : IAuthenticationProvider
     {
-        private IPublicClientApplication _msalClient;
-        private string[] _scopes;
-        private IAccount _userAccount;
+        private IConfidentialClientApplication _msalClient;
+        private string _token;
+        private AuthenticationConfig config;
 
-        public DeviceCodeAuthProvider(string appId, string[] scopes)
+        public DeviceCodeAuthProvider()
         {
-            _scopes = scopes;
-
-            _msalClient = PublicClientApplicationBuilder
-                .Create(appId)
-                .WithAuthority(AadAuthorityAudience.AzureAdAndPersonalMicrosoftAccount, true)
-                .Build();
+            config = AuthenticationConfig.ReadFromJsonFile("appsettings.json");
+            
+            _msalClient = ConfidentialClientApplicationBuilder.Create(config.ClientId)
+                                                      .WithClientSecret(config.ClientSecret)
+                                                      .WithAuthority(new Uri(config.Authority))
+                                                      .Build();
         }
 
         public async Task<string> GetAccessToken()
         {
             // If there is no saved user account, the user must sign-in
-            if (_userAccount == null)
-            {
-                try
-                {
-                    // Invoke device code flow so user can sign-in with a browser
-                    var result = await _msalClient.AcquireTokenWithDeviceCode(_scopes, callback => {
-                        Console.WriteLine(callback.Message);
-                        return Task.FromResult(0);
-                    }).ExecuteAsync();
+            if (!string.IsNullOrEmpty(_token))
+                return _token;
 
-                    _userAccount = result.Account;
-                    return result.AccessToken;
-                }
-                catch (Exception exception)
-                {
-                    Console.WriteLine($"Error getting access token: {exception.Message}");
-                    return null;
-                }
+            try
+            {
+                // Invoke device code flow so user can sign-in with a browser
+                var result = await _msalClient.AcquireTokenForClient(new string[] { $"{config.ApiUrl}.default" })
+                .ExecuteAsync();
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine("Token acquired");
+                Console.ResetColor();
+
+                _token = result.AccessToken;
+                return _token;
             }
-            else
+            catch (Exception exception)
             {
-                // If there is an account, call AcquireTokenSilent
-                // By doing this, MSAL will refresh the token automatically if
-                // it is expired. Otherwise it returns the cached token.
-
-                    var result = await _msalClient
-                        .AcquireTokenSilent(_scopes, _userAccount)
-                        .ExecuteAsync();
-
-                   return result.AccessToken;
+                Console.WriteLine($"Error getting access token: {exception.Message}");
+                return null;
             }
         }
 

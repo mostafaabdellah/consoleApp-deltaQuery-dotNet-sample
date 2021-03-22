@@ -11,12 +11,10 @@ namespace DeltaQuery
 {
     class Program
     {
-        // The Microsoft Graph permission scopes used by the app
-        private static string[] _scopes = { "User.Read", "Mail.Read" };
-
         // The number of seconds to wait between delta queries
-        private static int _pollIntervalInSecs = 30;
-
+        private static int pollInterval=1;
+        private static DateTime lastSync = DateTime.MinValue.Add(new TimeSpan(0,0,pollInterval));
+        private static bool firstCall = true;
         // Graph client
         private static GraphServiceClient _graphClient;
 
@@ -25,26 +23,218 @@ namespace DeltaQuery
 
         static async Task Main(string[] args)
         {
-            var appConfig = LoadAppSettings();
-
-            var authProvider = new DeviceCodeAuthProvider(
-                appConfig["AzureAppId"], _scopes);
-
+            var authProvider = new DeviceCodeAuthProvider();
             _graphClient = new GraphServiceClient(authProvider);
 
-            await WatchMailFolders(_pollIntervalInSecs);
+            //await GetSitecollections();
+
+            var deltaCollection = await _graphClient.Sites["afd504d1-b33f-40e1-a875-3c5b3da49ead"].Drive.Root
+                .Delta()
+                .Request()
+                .Select("CreatedDateTime,Deleted,File,Folder,Id,LastModifiedDateTime,Name,Root,SharepointIds,Size,WebUrl")
+                //.Header("Prefer", "return=minimal")
+                .GetAsync();
+            await WatchQueryAsync(deltaCollection);
+            //var deltaOneDrive= await _graphClient.Users["ebcd42aa-77cc-4533-9c04-ba32df03c761"] .Drive.Root
+            //    .Delta()
+            //    .Request()
+            //    .Header("Prefer", "return=minimal")
+            //    //.Header("ocp-aad-dq-include-only-changed-properties", "true")
+            //    .GetAsync();
+            //await WatchQueryAsync(deltaOneDrive);
         }
 
-        static async Task WatchMailFolders(int pollInterval)
+        private static async Task WatchQueryAsync(IDriveItemDeltaCollectionPage deltaCollection)
         {
-            // Get first page of mail folders
-            IMailFolderDeltaCollectionPage deltaCollection;
-            deltaCollection = await _graphClient.Me.MailFolders
-                .Delta()
+            
+            while (true)
+            {
+                if (deltaCollection.CurrentPage.Count <= 0)
+                {
+                    //Console.WriteLine("No changes...");
+                }
+                else
+                {
+                    bool morePagesAvailable;
+                    do
+                    {
+                        // If there is a NextPageRequest, there are more pages
+                        morePagesAvailable = deltaCollection.NextPageRequest != null;
+                        if (firstCall)
+                            foreach (var item in deltaCollection.CurrentPage)
+                                Console.WriteLine($"{item.WebUrl}");
+                        else
+                            foreach (var drive in deltaCollection.CurrentPage)
+                                await ProcessChangesAsync(drive);
+
+                        if (morePagesAvailable)
+                        {
+                            // Get the next page of results
+                            deltaCollection = await deltaCollection.NextPageRequest.GetAsync();
+                        }
+                    }
+                    while (morePagesAvailable);
+                }
+
+                // Once we've iterated through all of the pages, there should
+                // be a delta link, which is used to request all changes since our last query
+                var deltaLink = string.Empty;
+                if (deltaCollection.AdditionalData.ContainsKey("@odata.nextLink") && deltaCollection.AdditionalData["@odata.nextLink"] != null)
+                    deltaLink = deltaCollection.AdditionalData["@odata.nextLink"].ToString();
+                else if (deltaCollection.AdditionalData["@odata.deltaLink"] != null)
+                    deltaLink = deltaCollection.AdditionalData["@odata.deltaLink"].ToString();
+                if (!string.IsNullOrEmpty(deltaLink))
+                {
+                    lastSync = DateTime.Now.ToUniversalTime();
+                    firstCall = false;
+                    //Console.WriteLine($"Processed current delta. Will check back in {pollInterval} seconds.");
+                    await Task.Delay(pollInterval * 1000);
+                    deltaCollection.InitializeNextPageRequest(_graphClient, deltaLink);
+                    deltaCollection = await deltaCollection.NextPageRequest
+                        //.Header("Prefer", "return=minimal")
+                        //.Header("ocp-aad-dq-include-only-changed-properties", "true")
+                        .GetAsync();
+                }
+            }
+
+        }
+        private static async Task ProcessChangesAsync(DriveItem drive)
+        {
+            if (drive.Root != null)
+                return;
+
+            if (SkipFolder(drive))
+                return;
+
+            if (FolderDeleted(drive))
+                Console.WriteLine($"\n Folder Deleted {drive.SharepointIds.SiteUrl} ListId={drive.SharepointIds.ListId} Id={drive.SharepointIds.ListItemId}\n");
+            else if (FileDeleted(drive))
+                Console.WriteLine($"\n File Deleted {drive.SharepointIds.SiteUrl} ListId={drive.SharepointIds.ListId} Id={drive.SharepointIds.ListItemId}\n");
+            else if (NewFolder(drive))
+                Console.WriteLine($"\n New Folder Created {drive.WebUrl}\n");
+            else if (FolderChanged(drive))
+            {
+                var itemDeatils = await GetItemDetails(drive);
+                Console.WriteLine($"\n Folder Changed {drive.WebUrl}\n");
+            }
+            else if (NewFile(drive))
+                Console.WriteLine($"\n New File Created {drive.WebUrl}\n");
+            else if (FileChanged(drive))
+            {
+                var itemDeatils = await GetItemDetails(drive);
+                Console.WriteLine($"\n File Changed {drive.WebUrl}\n");
+            }
+
+
+        }
+
+        private static async Task<ListItem> GetItemDetails(DriveItem drive)
+        {
+            var spIds = drive.SharepointIds;
+            var activities=await _graphClient
+                .Sites[spIds.SiteId]
+                .Lists[spIds.ListId]
+                .Items[spIds.ListItemUniqueId]
                 .Request()
                 .GetAsync();
 
-            while(true)
+            return await _graphClient
+                .Sites[spIds.SiteId]
+                .Lists[spIds.ListId]
+                .Items[spIds.ListItemUniqueId]
+                //.GetActivitiesByInterval()
+                .Request()
+                .GetAsync();
+        }
+
+        private static bool FileDeleted(DriveItem drive)
+        {
+            return drive.File != null
+                && drive.Deleted != null;
+        }
+
+        private static bool FolderDeleted(DriveItem drive)
+        {
+            return drive.Folder != null
+                && drive.Deleted != null;
+        }
+
+        private static bool FileChanged(DriveItem drive)
+        {
+            return drive.File != null
+                            && !firstCall
+                            && drive.CreatedDateTime != drive.LastModifiedDateTime
+                            && lastSync.Subtract(new TimeSpan(0, 0, pollInterval)).CompareTo(drive.LastModifiedDateTime.Value.DateTime) < 0;
+        }
+
+        private static bool SkipFolder(DriveItem drive)
+        {
+            return drive.Folder != null
+                && drive.Deleted==null
+                            && lastSync.Subtract(new TimeSpan(0, 0, pollInterval)).CompareTo(drive.LastModifiedDateTime.Value.DateTime) > 0;
+        }
+        private static bool NewFile(DriveItem drive)
+        {
+            return drive.File != null
+                            && !firstCall
+                            && drive.CreatedDateTime == drive.LastModifiedDateTime
+                            && lastSync.Subtract(new TimeSpan(0, 0, pollInterval)).CompareTo(drive.LastModifiedDateTime.Value.DateTime) < 0;
+        }
+        private static bool FolderChanged(DriveItem drive)
+        {
+            return drive.Folder != null
+                            && !firstCall
+                            && drive.Size == 0
+                            && drive.CreatedDateTime != drive.LastModifiedDateTime
+                            && lastSync.Subtract(new TimeSpan(0, 0, pollInterval)).CompareTo(drive.LastModifiedDateTime.Value.DateTime) < 0;
+        }
+
+        private static bool NewFolder(DriveItem drive)
+        {
+            return drive.Folder != null
+                            && !firstCall
+                            && drive.Size == 0
+                            && drive.CreatedDateTime == drive.LastModifiedDateTime
+                            && lastSync.Subtract(new TimeSpan(0, 0, pollInterval)).CompareTo(drive.LastModifiedDateTime.Value.DateTime) < 0;
+        }
+
+        private static void DisplayDriveProp(DriveItem drive)
+        {
+            Console.WriteLine(drive.WebUrl);
+            Console.ForegroundColor = ConsoleColor.Green;
+            foreach (var prop in drive.GetType().GetProperties())
+            {
+                var value = drive.GetType().GetProperty(prop.Name).GetValue(drive, null)?.ToString();
+                if (!string.IsNullOrEmpty(value))
+                    Console.WriteLine($"{prop.Name} = {value}");
+            }
+            Console.ForegroundColor = ConsoleColor.Gray;
+        }
+
+        static async Task GetSitecollections()
+        {
+            var collections = await _graphClient.Sites
+    .Request()
+    //.Select("siteCollection,webUrl")
+    .GetAsync();
+            Console.WriteLine(collections);
+            foreach (var item in collections)
+            {
+                Console.WriteLine($"WebUrl= {item.WebUrl}, SiteId={item.Id}");
+            }
+        }
+            static async Task WatchMailFolders(int pollInterval)
+        {
+            // Get first page of mail folders
+            //IMailFolderDeltaCollectionPage deltaCollection;
+            var deltaCollection = await _graphClient.Sites
+    .Request()
+    //.Filter("siteCollection/root ne null")
+    .Select("siteCollection,webUrl")
+    .GetAsync();
+
+
+            while (true)
             {
                 if (deltaCollection.CurrentPage.Count <= 0)
                 {
@@ -59,7 +249,7 @@ namespace DeltaQuery
                         morePagesAvailable = deltaCollection.NextPageRequest != null;
                         foreach(var mailFolder in deltaCollection.CurrentPage)
                         {
-                            await ProcessChanges(mailFolder);
+                            //await ProcessChanges(mailFolder);
                         }
 
                         if (morePagesAvailable)
