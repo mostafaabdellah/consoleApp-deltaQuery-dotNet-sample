@@ -3,6 +3,7 @@
 using Microsoft.Graph;
 using Microsoft.Identity.Client;
 using System;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Threading.Tasks;
@@ -27,21 +28,23 @@ namespace DeltaQuery.Authentication
 
         public async Task<string> GetAccessToken()
         {
+                string[] scopes = new string[] { $"{config.ApiUrl}.default" };
             // If there is no saved user account, the user must sign-in
-            if (!string.IsNullOrEmpty(_token))
-                return _token;
+            //if (!string.IsNullOrEmpty(_token))
+            //    return _token;
 
             try
             {
                 // Invoke device code flow so user can sign-in with a browser
-                var result = await _msalClient.AcquireTokenForClient(new string[] { $"{config.ApiUrl}.default" })
+                var result = await _msalClient.AcquireTokenForClient(scopes)
                 .ExecuteAsync();
-                Console.ForegroundColor = ConsoleColor.Green;
-                Console.WriteLine("Token acquired");
-                Console.ResetColor();
+                
+                //Console.ForegroundColor = ConsoleColor.Green;
+                //Console.WriteLine("Token acquired");
+                //Console.ResetColor();
 
-                _token = result.AccessToken;
-                return _token;
+                //_token = result.AccessToken;
+                return result.AccessToken;
             }
             catch (Exception exception)
             {
