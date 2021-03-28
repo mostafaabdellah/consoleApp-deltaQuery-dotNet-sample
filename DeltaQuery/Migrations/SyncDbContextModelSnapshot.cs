@@ -62,6 +62,50 @@ namespace DeltaQuery.Migrations
 
                     b.ToTable("Resources");
                 });
+
+            modelBuilder.Entity("DeltaQuery.Source", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("ActType")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ListId")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("ListItemUniqueId")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Message")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime>("ObsActionDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("OrgActionDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("ResType")
+                        .HasColumnType("int");
+
+                    b.Property<string>("SiteId")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("SiteUrl")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("TimeDif")
+                        .HasColumnType("int");
+
+                    b.Property<string>("WebUrl")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("Sources");
+                });
 #pragma warning restore 612, 618
         }
     }

@@ -16,40 +16,9 @@ namespace DeltaQuery
     {
         public IDriveItemDeltaCollectionPage DeltaCollection { get; set; }
         public string DeltaLink { get; set; }
-        public DateTime LastSyncDate { get; set; }
+        public long LastSyncDate { get; set; }
     }
-    public class Resource
-    {
-        [Key]
-        public Guid Id { get; set; }
-        public string SiteUrl { get; set; }
-        public string WebUrl { get; set; }
-        public string SiteId { get; set; }
-        public string ListId { get; set; }
-        public string ListItemUniqueId { get; set; }
-        public ResourceType ResType{ get; set; }
-        public Activity ActType { get; set; }
-        public DateTime OrgActionDate { get; set; }
-        public DateTime ObsActionDate { get; set; }
-        public int TimeDif { get; set; }
-        public string Message { get; set; }
-        public enum Activity
-        {
-            Added = 1,
-            Renamed = 2,
-            Moved = 3,
-            Deleted = 4,
-            VersionAdded = 6,
-            Exist=7,
-            Unknown=8
-        }
-        public enum ResourceType
-        {
-            Team = 1,
-            Folder = 2,
-            File = 3
-        }
-    }
+    
     class Program
     {
         // The number of seconds to wait between delta queries
@@ -64,6 +33,9 @@ namespace DeltaQuery
         private static bool showOnConsole=true;
         static async Task Main(string[] args)
         {
+            await DbOperations.ClearResourcesAsync();
+            Console.WriteLine("Clear DB ..");
+            Console.WriteLine("Start Watching..");
             var authProvider = new DeviceCodeAuthProvider();
             graphClient = new GraphServiceClient(authProvider);
             await WatchTeamsAsync();
@@ -92,16 +64,10 @@ namespace DeltaQuery
                     && w.ResourceProvisioningOptions.Contains("Team"));
                     if (firstCall)
                         foreach (var team in teamsFiltered)
-                        {
-                            //AddTeam(team, Activity.Exist);
-                            if (!teamSitesDeltaLinks.ContainsKey(team.Id)) teamSitesDeltaLinks.Add(team.Id, null);
-                        }
+                            await LogAddedTeamAsync(team, Activity.Exist);
                     else
                         foreach (var team in teamsFiltered)
-                        {
-                            LogAddedTeam(team, Activity.Added);
-                            if (!teamSitesDeltaLinks.ContainsKey(team.Id)) teamSitesDeltaLinks.Add(team.Id, null);
-                        }
+                            await LogAddedTeamAsync(team, Activity.Added);
                 }
 
                 var nextLink = string.Empty;
@@ -145,29 +111,44 @@ namespace DeltaQuery
                 resources= resources = new List<Resource>();
             }
         }
-        private static void LogAddedTeam(Group team, Activity type)
-        {
-            var record = new Resource()
-            {
-                ActType = type,
-                OrgActionDate = team.CreatedDateTime.Value.UtcDateTime,
-                ObsActionDate = DateTime.UtcNow,
-                ResType = ResourceType.Team,
-                TimeDif = (int)DateTime.UtcNow.Subtract(team.CreatedDateTime.Value.UtcDateTime).TotalSeconds,
-                Message = $"New Team Created \"{team.DisplayName}\" On {team.CreatedDateTime} Visibility = {team.Visibility}"
-            };
-            
-            //if (type == Activity.Exist)
-            //    record.Message=$"Exist Team \"{team.DisplayName}\" Created On {team.CreatedDateTime} Visibility = {team.Visibility}";
-            //else
-            //    record.Message = $"New Team Created \"{team.DisplayName}\" On {team.CreatedDateTime} Visibility = {team.Visibility}";
-            
-            resources.Add(record);
-            if(showOnConsole)
-                Console.WriteLine(record.Message);
-            Task.Delay(1 * 1000);
-        }
 
+        private static async Task LogAddedTeamAsync(Group team, Activity type)
+        {
+            try
+            {
+                var teamSite= await graphClient.Groups[team.Id].Drive.Root
+                                        .Request()
+                                        .Select("CreatedDateTime,Deleted,File,Folder,LastModifiedDateTime,Root,SharepointIds,Size,WebUrl")
+                                        .GetAsync();
+
+                if (!teamSitesDeltaLinks.ContainsKey(team.Id)) teamSitesDeltaLinks.Add(team.Id, null);
+                var record = new Resource()
+                {
+                    ActType = type,
+                    OrgActionDate = team.CreatedDateTime.Value.UtcDateTime,
+                    ObsActionDate = DateTime.UtcNow,
+                    ResType = ResourceType.Team,
+                    TimeDif = (int)DateTime.UtcNow.Subtract(team.CreatedDateTime.Value.UtcDateTime).TotalSeconds,
+                    Message = $"New Team Created \"{team.DisplayName}\" On {team.CreatedDateTime} Visibility = {team.Visibility}"
+                };
+
+                //if (type == Activity.Exist)
+                //    record.Message=$"Exist Team \"{team.DisplayName}\" Created On {team.CreatedDateTime} Visibility = {team.Visibility}";
+                //else
+                //    record.Message = $"New Team Created \"{team.DisplayName}\" On {team.CreatedDateTime} Visibility = {team.Visibility}";
+
+                resources.Add(record);
+                if (showOnConsole)
+                    Console.WriteLine(record.Message);
+                //Task.Delay(1 * 1000);
+            }
+            catch (Exception exception)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"Error WatchTeamSiteAsync team {team.DisplayName}: {exception.Message}");
+                Console.ResetColor();
+            }
+        }
         private static async Task WatchTeamsSitesAsync()
         {
             ICollection<string> keys = teamSitesDeltaLinks.Keys.ToList();
@@ -192,10 +173,10 @@ namespace DeltaQuery
                     deltaCollection = await graphClient.Groups[pair.Key].Drive.Root
                         .Delta()
                         .Request()
-                        .Select("Shared,ETag,CTag,CreatedDateTime,Deleted,File,Folder,LastModifiedDateTime,Root,SharepointIds,Size,WebUrl")
+                        .Select("CreatedDateTime,Deleted,File,Folder,LastModifiedDateTime,Root,SharepointIds,Size,WebUrl")
                         .GetAsync();
                     deltaLinks.DeltaCollection = deltaCollection;
-                    deltaLinks.LastSyncDate = DateTime.UtcNow;
+                    deltaLinks.LastSyncDate = DateTime.UtcNow.Ticks/ 100000000;
                     libraryDeltaCalls++;
                 }
                 else
@@ -232,15 +213,29 @@ namespace DeltaQuery
                     deltaLinks.DeltaLink = deltaCollection.AdditionalData["@odata.deltaLink"].ToString();
                 }
                 deltaLinks.DeltaCollection = deltaCollection;
-                deltaLinks.LastSyncDate = DateTime.UtcNow;
+                deltaLinks.LastSyncDate = DateTime.UtcNow.Ticks / 100000000;
                 teamSitesDeltaLinks[pair.Key] = deltaLinks;
             }
             catch (Exception exception)
             {
-                Console.WriteLine($"Error WatchTeamSiteAsync site {pair.Key}: {exception.Message}");
+                if (exception.Message.Contains("Resource provisioning is in progress. Please try again.")
+                    || exception.Message.Contains("Resource is not found."))
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"Error WatchTeamSiteAsync site {pair.Key}: {exception.Message}");
+                    Console.ResetColor();
+                    //await Task.Delay(2 * 1000);
+                    //await WatchTeamSiteAsync(pair);
+                }
+                else
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"Error WatchTeamSiteAsync site {pair.Key}: {exception.Message}");
+                    Console.ResetColor();
+                }
             }
         }
-        private static async Task ProcessChangesAsync(DriveItem drive, DateTime lastSyncDate)
+        private static async Task ProcessChangesAsync(DriveItem drive, long lastSyncDate)
         {
             try
             {
@@ -267,7 +262,9 @@ namespace DeltaQuery
             }
             catch (Exception exception)
             {
+                Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine($"Error Process Changes {drive.WebUrl}: {exception.Message}");
+                Console.ResetColor();
             }
         }
 
@@ -345,7 +342,7 @@ namespace DeltaQuery
                 Console.WriteLine(record.Message);
         }
 
-        private static async Task LogResourceActivities(DriveItem drive, ResourceType resType, DateTime lastSyncDate)
+        private static async Task LogResourceActivities(DriveItem drive, ResourceType resType, long lastSyncDate)
         {
             var spIds = drive.SharepointIds;
 
@@ -354,12 +351,12 @@ namespace DeltaQuery
                 .Lists[spIds.ListId]
                 .Items[spIds.ListItemId].Activities
                 .Request()
-                .Top(1)
+                .Top(5)
                 .Select("action,times")
                 .GetAsync();
 
             activitiesCalls++;
-            var activities = collection.Where(w => w.Times.RecordedDateTime.Value.CompareTo(lastSyncDate) > 0);
+            var activities = collection.Where(w => w.Times.RecordedDateTime.Value.Ticks>=lastSyncDate);
 
             foreach (var act in activities)
             {
@@ -387,39 +384,39 @@ namespace DeltaQuery
                 && drive.Deleted != null;
         }
 
-        private static bool FileChanged(DriveItem drive, DateTime lastSyncDate)
+        private static bool FileChanged(DriveItem drive, long lastSyncDate)
         {
             return drive.File != null
                             && drive.CreatedDateTime != drive.LastModifiedDateTime
-                            && lastSyncDate.CompareTo(drive.LastModifiedDateTime.Value.DateTime) <= 0;
+                            && (lastSyncDate <= drive.LastModifiedDateTime.Value.Ticks);
         }
 
-        private static bool SkipFolder(DriveItem drive, DateTime lastSyncDate)
+        private static bool SkipFolder(DriveItem drive, long lastSyncDate)
         {
             return drive.Folder != null
                 && drive.Deleted==null
-                            && lastSyncDate.CompareTo(drive.LastModifiedDateTime.Value.DateTime) >= 0;
+                            && (lastSyncDate > drive.LastModifiedDateTime.Value.Ticks);
         }
-        private static bool NewFile(DriveItem drive, DateTime lastSyncDate)
+        private static bool NewFile(DriveItem drive, long lastSyncDate)
         {
             return drive.File != null
                             && drive.CreatedDateTime == drive.LastModifiedDateTime
-                            && lastSyncDate.CompareTo(drive.LastModifiedDateTime.Value.DateTime) <= 0;
+                            && (lastSyncDate<=drive.LastModifiedDateTime.Value.Ticks) ;
         }
-        private static bool FolderChanged(DriveItem drive, DateTime lastSyncDate)
+        private static bool FolderChanged(DriveItem drive, long lastSyncDate)
         {
             return drive.Folder != null
                             && drive.Size == 0
                             && drive.CreatedDateTime != drive.LastModifiedDateTime
-                            && lastSyncDate.CompareTo(drive.LastModifiedDateTime.Value.DateTime) <= 0;
+                            && (lastSyncDate <= drive.LastModifiedDateTime.Value.Ticks);
         }
 
-        private static bool NewFolder(DriveItem drive, DateTime lastSyncDate)
+        private static bool NewFolder(DriveItem drive, long lastSyncDate)
         {
             return drive.Folder != null
                             && drive.Size == 0
                             && drive.CreatedDateTime == drive.LastModifiedDateTime
-                            && lastSyncDate.CompareTo(drive.LastModifiedDateTime.Value.DateTime) <= 0;
+                            && (lastSyncDate <= drive.LastModifiedDateTime.Value.Ticks);
         }
 
         private static void DisplayDriveProp(DriveItem drive)
