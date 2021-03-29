@@ -3,6 +3,7 @@ using Microsoft.Graph;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -18,8 +19,9 @@ namespace TeamsBulkCreation
 
         private static GraphServiceClient graphClient;
         private static int teamsRequestedCount = 2500;
-        private static int folderRequestedCount = 20;
-        private static int filesCount = 20;
+        private static int startTeamId = 1439;
+        private static int folderRequestedCount = 2;
+        private static int filesCount = 5;
         //private static int folderRequestedLevelCount = 1;
         //private static int folderCounter = 1;
         //private static int folderLevelCounter = 1;
@@ -29,18 +31,18 @@ namespace TeamsBulkCreation
         private static Source.Activity currentActivity = Source.Activity.Unknown;
         static async Task Main(string[] args)
         {
+            //await ClearTeamsAndSourcesAsync();
+            //await CreateTeamsAsync();
             //var appAuthProvider = new AppAuthProvider();
+
+            await DbOperations.ClearSourcesAsync();
             var accountAuthProvider = new AccountAuthProvider();
             graphClient = new GraphServiceClient(accountAuthProvider);
-            await ClearTeamsAndSourcesAsync();
-            await CreateTeamsAsync();
-            await LogTeamsAsync();
-
-            graphClient = new GraphServiceClient(accountAuthProvider);
-            currentActivity = Source.Activity.Added;
+            await LogTeamsAsync(100);
+            await DeleteTeamGeneralFolderAsync("/General");
+            //graphClient = new GraphServiceClient(accountAuthProvider);
             await CreateTeamFoldersAsync();
-            currentActivity = Source.Activity.VersionAdded;
-            await CreateTeamFoldersAsync();
+            
         }
 
         private static async Task CreateTeamFoldersAsync()
@@ -101,15 +103,71 @@ namespace TeamsBulkCreation
             if (showOnConsole)
                 Console.WriteLine(source.Message);
 
+            await Task.Delay(100);
+
             for (int i = 1; i <= filesCount; i++)
                 await UploadSmallFile(sp, path,i);
 
+            await Task.Delay(100);
+
             for (int i = 1; i <= filesCount; i++)
-                await CheckoutFile(sp, path, i);
+                await CheckOutInFile(sp, path, i);
 
+            await Task.Delay(100);
 
-            //await UploadlargeFile(sp, path);
+            for (int i = 1; i <= filesCount; i++)
+                await RenameFile(sp, path, i);
+
+            await Task.Delay(5000);
+
+            for (int i = 1; i <= filesCount; i++)
+                await DeleteFile(sp, path, i);
+
             return path;
+        }
+
+        private static async Task RenameFile(SharepointIds sp, string path, int i)
+        {
+            var driveItem = new DriveItem
+            {
+                Name = $"RenameSmallFile{i:D2}.txt"
+            };
+
+            await graphClient.Sites[sp.SiteId]
+                            .Drive.Root
+                            .ItemWithPath($"{path}/SmallFile{i:D2}.txt")
+                            .Request()
+                            .UpdateAsync(driveItem);
+
+            var source = new Source()
+            {
+                ActType = Source.Activity.Renamed,
+                ResType = Source.ResourceType.File,
+                OrgActionDate = DateTime.UtcNow,
+                Message = $"Rename file {$"{path}/SmallFile{i:D2}.txt"} on {DateTime.UtcNow}"
+            };
+            await DbOperations.UpdateSourcesAsync(source);
+            if (showOnConsole)
+                Console.WriteLine(source.Message);
+        }
+        private static async Task DeleteFile(SharepointIds sp, string path, int i)
+        {
+            await graphClient.Sites[sp.SiteId]
+                            .Drive.Root
+                            .ItemWithPath($"{path}/RenameSmallFile{i:D2}.txt")
+                            .Request()
+                            .DeleteAsync();
+
+            var source = new Source()
+            {
+                ActType = Source.Activity.Deleted,
+                ResType = Source.ResourceType.File,
+                OrgActionDate = DateTime.UtcNow,
+                Message = $"Rename file {$"{path}/RenameSmallFile{i:D2}.txt"} on {DateTime.UtcNow}"
+            };
+            await DbOperations.UpdateSourcesAsync(source);
+            if (showOnConsole)
+                Console.WriteLine(source.Message);
         }
 
         private static async Task UploadSmallFile(SharepointIds sp, string path, int i)
@@ -133,7 +191,7 @@ namespace TeamsBulkCreation
                     Console.WriteLine(source.Message);
             }
         }
-        private static async Task CheckoutFile(SharepointIds sp, string path, int i)
+        private static async Task CheckOutInFile(SharepointIds sp, string path, int i)
         {
             using (FileStream fileStream = new FileStream(smallFilePath, FileMode.Open))
             {
@@ -196,26 +254,27 @@ namespace TeamsBulkCreation
 
         private static async Task ClearTeamsAndSourcesAsync()
         {
-            var teams = await graphClient.Groups
-                .Request()
-                .Filter("resourceProvisioningOptions/Any(x:x eq 'Team')")
-                .Select("id")
-                .GetAsync();
+            //var teams = await graphClient.Groups
+            //    .Request()
+            //    .Filter("resourceProvisioningOptions/Any(x:x eq 'Team')")
+            //    .Select("id")
+            //    .GetAsync();
 
-            foreach (var team in teams)
-                await graphClient.Groups[team.Id].Request().DeleteAsync();
+            //foreach (var team in teams)
+            //    await graphClient.Groups[team.Id].Request().DeleteAsync();
 
             await DbOperations.ClearSourcesAsync();
         }
 
-        private static async Task LogTeamsAsync()
+        private static async Task LogTeamsAsync(int limit)
         {
             try
             {
                 var teams = await graphClient.Groups
                     .Request()
                     .Filter("resourceProvisioningOptions/Any(x:x eq 'Team')")
-                    .Select("id,displayName,visibility,resourceProvisioningOptions,CreatedDateTime")
+                    .Select("id,displayName,visibility,CreatedDateTime")
+                    .Top(limit)
                     .GetAsync();
 
                 foreach (var team in teams)
@@ -226,6 +285,46 @@ namespace TeamsBulkCreation
                 Console.WriteLine(ex.Message);
             }
         }
+        private static async Task DeleteTeamGeneralFolderAsync(string path)
+        {
+            try
+            {
+                foreach (var team in teamSites)
+                    await DeleteFolder(path, team.Key);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex.Message);
+            }
+        }
+
+        private static async Task DeleteFolder(string path, string teamId)
+        {
+            try
+            {
+                await graphClient.Sites[teamId]
+                                           .Drive.Root
+                                           .ItemWithPath($"{path}")
+                                           .Request()
+                                           .DeleteAsync();
+                var source = new Source()
+                {
+                    ActType = currentActivity,
+                    ResType = Source.ResourceType.File,
+                    OrgActionDate = DateTime.UtcNow,
+                    Message = $"{path} Folder Deleted"
+                };
+
+                await DbOperations.UpdateSourcesAsync(source);
+                if (showOnConsole)
+                    Console.WriteLine(source.Message);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex.Message);
+            }
+        }
+
         private static async Task LogTeamAsync(Group team)
         {
             try
@@ -263,11 +362,11 @@ namespace TeamsBulkCreation
 
         private static async Task CreateTeamsAsync()
         {
-            for (int i = 0; i < teamsRequestedCount; i++)
-            {
-                await NewTeamAsync($"Public {i:D3}", TeamVisibilityType.Public);
-            }
-            for (int i = 0; i < teamsRequestedCount; i++)
+            //for (int i = startTeamId; i < teamsRequestedCount; i++)
+            //{
+            //    await NewTeamAsync($"Public {i:D3}", TeamVisibilityType.Public);
+            //}
+            for (int i = startTeamId; i < teamsRequestedCount; i++)
             {
                 await NewTeamAsync($"Private {i:D3}", TeamVisibilityType.Private);
             }

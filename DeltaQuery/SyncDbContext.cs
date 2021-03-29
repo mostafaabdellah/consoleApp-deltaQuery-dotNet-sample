@@ -12,6 +12,8 @@ namespace DeltaQuery
     {
         public DbSet<Resource> Resources { get; set; }
         public DbSet<Source> Sources { get; set; }
+        public DbSet<Performance> Performances { get; set; }
+        
         protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
         {
             optionsBuilder.UseSqlServer(@"Data Source=(LocalDb)\MSSQLLocalDB;Initial Catalog=SyncDb;Integrated Security=SSPI;AttachDBFilename=C:\Users\mmoustafa\AppData\Local\Microsoft\Microsoft SQL Server Local DB\Instances\MSSQLLocalDB\SyncDb.mdf");
@@ -81,14 +83,25 @@ namespace DeltaQuery
             File = 3
         }
     }
-
+    public class Performance
+    {
+        [Key]
+        public Guid Id { get; set; }
+        public int TeamsCount { get; set; }
+        public int DeltaCalls { get; set; }
+        public int ActivitiesCalls { get; set; }
+        public DateTime StartOn { get; set; }
+        public DateTime CompletedOn { get; set; }
+        public int Duration { get; set; }
+        public int AverageSyncDuration { get; set; }
+    }
     public class DbOperations
     {
-        public static async Task UpdateSourcesAsync(List<Source> sources)
+        public static async Task UpdateResourcesAsync(IList<Resource> resources)
         {
             using (var context = new SyncDbContext())
             {
-                context.Sources.AddRange(sources);
+                context.Resources.AddRange(resources);
                 await context.SaveChangesAsync();
             }
         }
@@ -100,6 +113,8 @@ namespace DeltaQuery
                 await context.Database.ExecuteSqlRawAsync("TRUNCATE TABLE Sources");
             }
         }
+
+        
 
         internal static async Task ClearResourcesAsync()
         {
@@ -116,6 +131,26 @@ namespace DeltaQuery
                 context.Sources.Add(source);
                 await context.SaveChangesAsync();
             }
+        }
+        public static async Task UpdatePerformanceAsync(Performance per)
+        {
+            using (var context = new SyncDbContext())
+            {
+                context.Performances.Update(per);
+                await context.SaveChangesAsync();
+            }
+        }
+
+        internal static async Task<int> GetAverageSyncAsync()
+        {
+            try
+            {
+                using (var context = new SyncDbContext())
+                {
+                    return (int)await context.Resources.AverageAsync(a => a.TimeDif);
+                }
+            }
+            catch { return 0; }
         }
     }
 }

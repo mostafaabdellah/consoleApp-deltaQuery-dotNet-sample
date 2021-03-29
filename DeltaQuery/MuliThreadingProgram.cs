@@ -1,18 +1,23 @@
 ﻿// Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license.
 using DeltaQuery.Authentication;
+using DeltaQuery.Migrations;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Graph;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.Linq;
+using System.Net.Http;
+using System.Threading;
 using System.Threading.Tasks;
 using static DeltaQuery.Resource;
 
 namespace DeltaQuery
 {
-    class Program
+
+    class MuliThreadingProgram
     {
         // The number of seconds to wait between delta queries
         private static int interval=5,processTime=0;
@@ -24,43 +29,138 @@ namespace DeltaQuery
         private static int teamsDeltaCalls, libraryDeltaCalls, activitiesCalls;
         private static IList<Resource> resources = new List<Resource>();
         private static bool showOnConsole=true;
-        static async Task MainST(string[] args)
+        private static bool noChanges = false;
+        private static int iteration=0;
+        private static Performance perf = new Performance();
+        private static int noTeams = 5;
+        static async Task Main(string[] args)
         {
+            var authProvider = new DeviceCodeAuthProvider();
+            //graphClient = new GraphServiceClient(authProvider);
+
+            using HttpClient client = new HttpClient(new HttpClientHandler() { MaxConnectionsPerServer = 1440 });
+            graphClient = new GraphServiceClient(client);
+            graphClient.AuthenticationProvider = authProvider;
             await DbOperations.ClearResourcesAsync();
             Console.WriteLine("Clear DB ..");
             Console.WriteLine("Start Watching..");
-            var authProvider = new DeviceCodeAuthProvider();
-            graphClient = new GraphServiceClient(authProvider);
-            await WatchTeamsAsync();
-            endTime = DateTime.UtcNow;
+            perf.StartOn = DateTime.UtcNow;
+            perf.TeamsCount = noTeams;
+            await WatchTeamsAsync(noTeams);
+            perf.ActivitiesCalls = activitiesCalls;
+            perf.DeltaCalls = libraryDeltaCalls;
+            perf.Duration = (int)DateTime.UtcNow.Subtract(perf.StartOn).TotalSeconds;
+            perf.CompletedOn = DateTime.UtcNow;
+            perf.AverageSyncDuration = await DbOperations.GetAverageSyncAsync();
+            await DbOperations.UpdatePerformanceAsync(perf);
+            Console.WriteLine($"Teams={perf.TeamsCount} - DeltaCalls={perf.DeltaCalls} - ActivitiesCalls={perf.ActivitiesCalls} - AverageSyncDuration={perf.AverageSyncDuration}");
         }
 
+        private static async Task WatchTeamsAsync(int limit)
+        {
+            var watch = new System.Diagnostics.Stopwatch();
+            watch.Start();
+            var teams = await graphClient.Groups
+                   .Request()
+                   .Filter("resourceProvisioningOptions/Any(x:x eq 'Team')")
+                   .Select("id,displayName,visibility,CreatedDateTime")
+                   .Top(limit)
+                   .GetAsync();
+            
+            foreach (var team in teams)
+                teamSitesDeltaLinks.Add(team.Id, null);
+            
+            watch.Stop();
+            Console.WriteLine($"Checking Teams completed on {watch.ElapsedMilliseconds / 1000} seconds");
+
+            while (!noChanges || iteration!=5)
+            {
+                WatchTeamsSites();
+                processTime = (int)DateTime.UtcNow.Subtract(lastProcessTime).TotalSeconds;
+                lastProcessTime = DateTime.UtcNow;
+                var wait = interval - processTime;
+                if (wait < 0) wait = 0;
+                await Task.Delay(wait * 1000);
+                await DbOperations.UpdateResourcesAsync(resources);
+                resources.Clear();
+                firstCall = false;
+
+                if (teamSitesDeltaLinks.Any(w => w.Value == null))
+                {
+                    noChanges = false;
+                    iteration = 0;
+                }
+                else if (teamSitesDeltaLinks.Any(w => w.Value.NoChanges))
+                {
+                    noChanges = true;
+                    iteration++;
+                }
+                else
+                {
+                    noChanges = false;
+                    iteration = 0;
+                }
+                await DbOperations.UpdatePerformanceAsync(perf);
+            }
+        }
         private static async Task WatchTeamsAsync()
         {
+            int count = 0;
             var deltaCollection = await graphClient.Groups
                 .Delta()
                 .Request()
                 .Select("id,displayName,visibility,resourceProvisioningOptions,CreatedDateTime")
                 .GetAsync();
             teamsDeltaCalls++;
-            while (true)
+                var watch = new System.Diagnostics.Stopwatch();
+                watch.Start();
+
+            while (teamSitesDeltaLinks.Any(w=>!w.Value.NoChanges))
             {
                 if (deltaCollection.CurrentPage.Count <= 0)
                 {
-                    //Console.WriteLine("No changes on teams...");
-                    await WatchTeamsSitesAsync();
+                    Console.WriteLine("No changes on teams...");
+                    WatchTeamsSites();
                 }
                 else
                 {
+                    
+
                     var teamsFiltered = deltaCollection.CurrentPage.Where(w =>
                         w.ResourceProvisioningOptions != null
                     && w.ResourceProvisioningOptions.Contains("Team"));
+                    Activity activity;
                     if (firstCall)
-                        foreach (var team in teamsFiltered)
-                            await LogAddedTeamAsync(team, Activity.Exist);
+                        activity = Activity.Exist;
                     else
-                        foreach (var team in teamsFiltered)
-                            await LogAddedTeamAsync(team, Activity.Added);
+                        activity = Activity.Added;
+
+                    var options = new ParallelOptions()
+                    {
+                        MaxDegreeOfParallelism = Environment.ProcessorCount
+                    };
+
+                    ConcurrentBag<string> resultCollection = new ConcurrentBag<string>();
+                    ParallelLoopResult result = Parallel.ForEach(teamsFiltered, options, team =>
+                    {
+                        if (LogAddedTeam(team, activity))
+                            resultCollection.Add(team.Id);
+                    });
+                    foreach (var teamId in resultCollection)
+                        if (!teamSitesDeltaLinks.ContainsKey(teamId))
+                        teamSitesDeltaLinks.Add(teamId, null);
+
+                    
+                    //if (result&&!teamSitesDeltaLinks.ContainsKey(team.Id))
+                    //    teamSitesDeltaLinks.Add(team.Id, null);
+                    //foreach (var team in teamsFiltered)
+                    //{
+                    //    await LogAddedTeamAsync(team, activity);
+                    //    //count++;
+                    //    //if (count > 10)
+                    //    //    break;
+                    //}
+
                 }
 
                 var nextLink = string.Empty;
@@ -80,18 +180,23 @@ namespace DeltaQuery
                 if (deltaCollection.AdditionalData["@odata.deltaLink"] != null)
                     deltaLink = deltaCollection.AdditionalData["@odata.deltaLink"].ToString();
 
-                await WatchTeamsSitesAsync();
+                watch.Stop();
+                Console.WriteLine($"Checking Teams completed on {watch.ElapsedMilliseconds / 1000} seconds");
+
+                WatchTeamsSites();
                 processTime = (int)DateTime.UtcNow.Subtract(lastProcessTime).TotalSeconds;
                 lastProcessTime = DateTime.UtcNow;
                 var wait = interval - processTime;
                 if (wait < 0) wait = 0;
                 await Task.Delay(wait * 1000);
+                await DbOperations.UpdateResourcesAsync(resources);
+                resources.Clear();
+                firstCall = false;
+                watch.Start();
                 deltaCollection.InitializeNextPageRequest(graphClient, deltaLink);
                 deltaCollection = await deltaCollection.NextPageRequest
                     .GetAsync();
                 teamsDeltaCalls++;
-                await UpdateDbAsync();
-                firstCall = false;
             }
 
         }
@@ -105,16 +210,15 @@ namespace DeltaQuery
             }
         }
 
-        private static async Task LogAddedTeamAsync(Group team, Activity type)
+        private static bool LogAddedTeam(Group team, Activity type)
         {
             try
             {
-                var teamSite= await graphClient.Groups[team.Id].Drive.Root
-                                        .Request()
-                                        .Select("CreatedDateTime,Deleted,File,Folder,LastModifiedDateTime,Root,SharepointIds,Size,WebUrl")
-                                        .GetAsync();
+                //var teamSite= await graphClient.Groups[team.Id].Drive.Root
+                //                        .Request()
+                //                        .Select("CreatedDateTime,Deleted,File,Folder,LastModifiedDateTime,Root,SharepointIds,Size,WebUrl")
+                //                        .GetAsync();
 
-                if (!teamSitesDeltaLinks.ContainsKey(team.Id)) teamSitesDeltaLinks.Add(team.Id, null);
                 var record = new Resource()
                 {
                     ActType = type,
@@ -134,28 +238,127 @@ namespace DeltaQuery
                 if (showOnConsole)
                     Console.WriteLine(record.Message);
                 //Task.Delay(1 * 1000);
+                return true;
             }
             catch (Exception exception)
             {
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine($"Error WatchTeamSiteAsync team {team.DisplayName}: {exception.Message}");
                 Console.ResetColor();
+                //await graphClient.Groups[team.Id].Request().DeleteAsync();
+                //Console.WriteLine($"team {team.DisplayName} deleted");
+                return false;
             }
         }
-        private static async Task WatchTeamsSitesAsync()
+        private static void WatchTeamsSites()
         {
+            var watch = new System.Diagnostics.Stopwatch();
+            watch.Start();
+            Console.WriteLine("Start Checking Changes on Team Sites...");
             ICollection<string> keys = teamSitesDeltaLinks.Keys.ToList();
-            foreach (var key in keys)
+            var options = new ParallelOptions()
             {
-                var pair = new KeyValuePair<string, DeltaLinks>(key, teamSitesDeltaLinks[key]);
-               await WatchTeamSiteAsync(pair);
+                MaxDegreeOfParallelism = Environment.ProcessorCount
+            };
+            Parallel.ForEach(keys, options, async key =>
+             {
+                 var pair = new KeyValuePair<string, DeltaLinks>(key, teamSitesDeltaLinks[key]);
+                 await WatchTeamSiteAsync(pair);
+             });
+            
+            watch.Stop();
+            Console.WriteLine($"Checking Changes on Team Sites completed on {watch.ElapsedMilliseconds/1000} seconds");
+
+            //foreach (var key in keys)
+            //{
+            //    var pair = new KeyValuePair<string, DeltaLinks>(key, teamSitesDeltaLinks[key]);
+            //    await WatchTeamSiteAsync(pair);
+            //}
+        }
+        private static void WatchTeamSiteAsync(object pairObj)
+        {
+            var pair = (KeyValuePair<string, DeltaLinks>)pairObj;
+            try
+            {
+                IDriveItemDeltaCollectionPage deltaCollection;
+                var deltaLinks = new DeltaLinks
+                {
+                };
+
+                if (pair.Value == null)
+                {
+                    deltaCollection = graphClient.Groups[pair.Key].Drive.Root
+                        .Delta()
+                        .Request()
+                        .Select("CreatedDateTime,Deleted,File,Folder,LastModifiedDateTime,Root,SharepointIds,Size,WebUrl")
+                        .GetAsync().Result;
+                    deltaLinks.DeltaCollection = deltaCollection;
+                    deltaLinks.LastSyncDate = DateTime.UtcNow.Ticks / 100000000;
+                    libraryDeltaCalls++;
+                }
+                else
+                {
+                    deltaLinks.LastSyncDate = pair.Value.LastSyncDate;
+                    deltaCollection = pair.Value.DeltaCollection;
+                    deltaCollection.InitializeNextPageRequest(graphClient, pair.Value.DeltaLink);
+                    deltaCollection = deltaCollection.NextPageRequest
+                        .GetAsync().Result;
+                    libraryDeltaCalls++;
+                }
+
+                if (deltaCollection.CurrentPage.Count > 0)
+                {
+                    if (!firstCall)
+                        foreach (var drive in deltaCollection.CurrentPage)
+                            ProcessChangesAsync(drive, deltaLinks.LastSyncDate).Wait();
+                    //else
+                    //    foreach (var item in deltaCollection.CurrentPage)
+                    //        Console.WriteLine($"{item.WebUrl}");
+                }
+
+
+
+                if (deltaCollection.AdditionalData.ContainsKey("@odata.nextLink") && deltaCollection.AdditionalData["@odata.nextLink"] != null)
+                {
+                    deltaLinks.DeltaLink = deltaCollection.AdditionalData["@odata.nextLink"].ToString();
+                    deltaLinks.DeltaCollection = deltaCollection;
+                    pair = new KeyValuePair<string, DeltaLinks>(pair.Key, deltaLinks);
+                    WatchTeamSiteAsync(pair).Wait();
+                }
+                else if (deltaCollection.AdditionalData["@odata.deltaLink"] != null)
+                {
+                    deltaLinks.DeltaLink = deltaCollection.AdditionalData["@odata.deltaLink"].ToString();
+                }
+                deltaLinks.DeltaCollection = deltaCollection;
+                deltaLinks.LastSyncDate = DateTime.UtcNow.Ticks / 100000000;
+                teamSitesDeltaLinks[pair.Key] = deltaLinks;
+            }
+            catch (Exception exception)
+            {
+                if (exception.Message.Contains("Resource provisioning is in progress. Please try again.")
+                    || exception.Message.Contains("Resource is not found."))
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"Error WatchTeamSiteAsync site {pair.Key}: {exception.Message}");
+                    Console.ResetColor();
+                    //await Task.Delay(2 * 1000);
+                    //await WatchTeamSiteAsync(pair);
+                }
+                else
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"Error WatchTeamSiteAsync site {pair.Key}: {exception.Message}");
+                    Console.ResetColor();
+                }
             }
         }
-
         private static async Task WatchTeamSiteAsync(KeyValuePair<string, DeltaLinks> pair)
         {
             try
             {
+                //var authProvider = new DeviceCodeAuthProvider();
+                //var graphClient = new GraphServiceClient(authProvider);
+
                 IDriveItemDeltaCollectionPage deltaCollection;
                 var deltaLinks = new DeltaLinks
                 {
@@ -184,12 +387,17 @@ namespace DeltaQuery
 
                 if (deltaCollection.CurrentPage.Count > 0)
                 {
+                    deltaLinks.NoChanges = false;
                     if (!firstCall)
                     foreach (var drive in deltaCollection.CurrentPage)
                         await ProcessChangesAsync(drive, deltaLinks.LastSyncDate);
                     //else
                     //    foreach (var item in deltaCollection.CurrentPage)
                     //        Console.WriteLine($"{item.WebUrl}");
+                }
+                else
+                {
+                    deltaLinks.NoChanges = true;
                 }
 
 
@@ -272,9 +480,6 @@ namespace DeltaQuery
                 SiteId=drive.SharepointIds.SiteId,
                 SiteUrl=drive.SharepointIds.SiteUrl,
                 WebUrl=drive.WebUrl,
-                OrgActionDate=drive.LastModifiedDateTime.Value.UtcDateTime,
-                ObsActionDate = DateTime.UtcNow,
-                TimeDif = (int)DateTime.UtcNow.Subtract(drive.CreatedDateTime.Value.UtcDateTime).TotalSeconds,
                 Message = $"{resType} Deleted {drive.SharepointIds.SiteUrl} ListId={drive.SharepointIds.ListId} Id={drive.SharepointIds.ListItemUniqueId}"
             };
 

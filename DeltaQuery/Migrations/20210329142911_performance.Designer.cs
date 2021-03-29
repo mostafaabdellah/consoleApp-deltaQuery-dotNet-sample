@@ -4,14 +4,16 @@ using DeltaQuery;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 namespace DeltaQuery.Migrations
 {
     [DbContext(typeof(SyncDbContext))]
-    partial class SyncDbContextModelSnapshot : ModelSnapshot
+    [Migration("20210329142911_performance")]
+    partial class performance
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -26,9 +28,6 @@ namespace DeltaQuery.Migrations
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<int>("ActivitiesCalls")
-                        .HasColumnType("int");
-
-                    b.Property<int>("AverageSyncDuration")
                         .HasColumnType("int");
 
                     b.Property<DateTime>("CompletedOn")
