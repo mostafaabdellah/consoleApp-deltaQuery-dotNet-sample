@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
+using System.Linq;
 using System.Threading.Tasks;
 
 namespace DeltaQuery
@@ -13,13 +14,21 @@ namespace DeltaQuery
         public DbSet<Resource> Resources { get; set; }
         public DbSet<Source> Sources { get; set; }
         public DbSet<Performance> Performances { get; set; }
-        
+        public DbSet<TeamTable> TeamsTable { get; set; }
+
         protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
         {
             optionsBuilder.UseSqlServer(@"Data Source=(LocalDb)\MSSQLLocalDB;Initial Catalog=SyncDb;Integrated Security=SSPI;AttachDBFilename=C:\Users\mmoustafa\AppData\Local\Microsoft\Microsoft SQL Server Local DB\Instances\MSSQLLocalDB\SyncDb.mdf");
         }
     }
-    public class Source
+    public class TeamTable
+    {
+        [Key]
+        public Guid Id { get; set; }
+        public string TeamId { get; set; }
+        public DateTime CreatedDateTime { get; set; }
+    }
+        public class Source
     {
         [Key]
         public Guid Id { get; set; }
@@ -94,9 +103,27 @@ namespace DeltaQuery
         public DateTime CompletedOn { get; set; }
         public int Duration { get; set; }
         public int AverageSyncDuration { get; set; }
+        public long TotalDuration { get; set; }
+        public int NoOfRuns { get; set; }
+        public long AvgDuration { get; set; }
     }
     public class DbOperations
     {
+        public static async Task AddTeamsToTable(IList<TeamTable> teams)
+        {
+            using (var context = new SyncDbContext())
+            {
+                context.TeamsTable.AddRange(teams);
+                await context.SaveChangesAsync();
+            }
+        }
+        public static IList<TeamTable> GetTeams(int limit)
+        {
+            using (var context = new SyncDbContext())
+            {
+                return context.TeamsTable.OrderBy(o => o.CreatedDateTime).Take(limit).ToList();
+            }
+        }
         public static async Task UpdateResourcesAsync(IList<Resource> resources)
         {
             using (var context = new SyncDbContext())
@@ -141,13 +168,13 @@ namespace DeltaQuery
             }
         }
 
-        internal static async Task<int> GetAverageSyncAsync()
+        internal static int GetAverageSync()
         {
             try
             {
                 using (var context = new SyncDbContext())
                 {
-                    return (int)await context.Resources.AverageAsync(a => a.TimeDif);
+                    return (int)context.Resources.ToList().Where(w => w.TimeDif < 50).Average(a => a.TimeDif);
                 }
             }
             catch { return 0; }

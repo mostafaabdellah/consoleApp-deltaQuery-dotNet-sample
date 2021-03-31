@@ -1,6 +1,7 @@
 ﻿using DeltaQuery;
 using Microsoft.Graph;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -18,112 +19,208 @@ namespace TeamsBulkCreation
         const string largeFilePath = @"SampleFiles\LargeFile.txt";
 
         private static GraphServiceClient graphClient;
-        private static int teamsRequestedCount = 2500;
-        private static int startTeamId = 1439;
+        private static int teamsRequestedCount = 6000;
+        private static int startTeamId = 5195;
         private static int folderRequestedCount = 2;
-        private static int filesCount = 5;
+        private static int filesCount = 3;
         //private static int folderRequestedLevelCount = 1;
         //private static int folderCounter = 1;
         //private static int folderLevelCounter = 1;
         private static int trials = 2;
         private static bool showOnConsole = true;
-        private static IDictionary<string, SharepointIds> teamSites = new Dictionary<string, SharepointIds>();
+        private static ConcurrentDictionary<string, SharepointIds> teamSites = new ConcurrentDictionary<string, SharepointIds>();
         private static Source.Activity currentActivity = Source.Activity.Unknown;
+        private static int noTeams = 5000;
+        private static List<Group> allTeams = new List<Group>();
+        private static int fileId = 5000;
+        private static int noOfThreads = 4;
         static async Task Main(string[] args)
         {
+            var accountAuthProvider = new AccountAuthProvider();
+            var appAuthProvider = new AppAuthProvider();
+            graphClient = new GraphServiceClient(appAuthProvider);
             //await ClearTeamsAndSourcesAsync();
             //await CreateTeamsAsync();
-            //var appAuthProvider = new AppAuthProvider();
-
-            await DbOperations.ClearSourcesAsync();
-            var accountAuthProvider = new AccountAuthProvider();
-            graphClient = new GraphServiceClient(accountAuthProvider);
-            await LogTeamsAsync(100);
-            await DeleteTeamGeneralFolderAsync("/General");
+            //await DbOperations.ClearSourcesAsync();
+            LogTeams(noTeams);
+            //await DeleteTeamGeneralFolderAsync("/General");
             //graphClient = new GraphServiceClient(accountAuthProvider);
-            await CreateTeamFoldersAsync();
-            
+            CreateTeamMutiThreadFolders();
+            //await CreateTeamFoldersAsync();
+
         }
 
+        private static void CreateTeamMutiThreadFolders()
+        {
+            var options = new ParallelOptions()
+            {
+                MaxDegreeOfParallelism = noOfThreads
+            };
+            Parallel.ForEach(teamSites.Keys, options, async key =>
+            {
+                await UploadSmallFileMT(teamSites[key], "/", fileId);
+            });
+        }
+        private static async Task UploadSmallFileMT(SharepointIds sp, string path, int i)
+        {
+            try
+            {
+                using (var stream = new MemoryStream())
+                {
+                    var writer = new StreamWriter(stream);
+                    writer.Write("Test document");
+                    writer.Flush();
+                    stream.Position = 0;
+
+                    var createdFile = await graphClient.Sites[sp.SiteId]
+                                .Drive.Root
+                                .ItemWithPath($"{path}/SmallFile{i:D2}.txt")
+                                .Content.Request()
+                                .PutAsync<DriveItem>(stream);
+                    var source = new Source()
+                    {
+                        ActType = currentActivity,
+                        ResType = Source.ResourceType.File,
+                        OrgActionDate = createdFile.CreatedDateTime.Value.UtcDateTime,
+                        Message = $"New File Created {createdFile.WebUrl} on {createdFile.CreatedDateTime.Value.UtcDateTime}"
+                    };
+                    await DbOperations.UpdateSourcesAsync(source);
+                    if (showOnConsole)
+                        Console.WriteLine(source.Message);
+                }
+            }catch(Exception ex)
+            {
+                Console.WriteLine(ex.Message);
+            }
+        }
         private static async Task CreateTeamFoldersAsync()
         {
             foreach (var key in teamSites.Keys)
             {
-                await CreateFolderLevelAsync(teamSites[key], "", 1, 1);
-                for (int i = 1; i <= folderRequestedCount; i++)
-                {
-                    var path = await CreateFolderLevelAsync(teamSites[key], "/General",i,1);
-                    for (int j = 1; j <= folderRequestedCount; j++)
-                    {
-                        await CreateFolderLevelAsync(teamSites[key], path,i,j);
-                    }
-                }
+                await UploadSmallFile(teamSites[key], "/", fileId);
+                //await CreateSingleFileAsync(teamSites[key], "", 1, 1);
+                //for (int i = 1; i <= folderRequestedCount; i++)
+                //{
+                //    var path = await CreateFolderLevelAsync(teamSites[key], "/General",i,1);
+                //    for (int j = 1; j <= folderRequestedCount; j++)
+                //    {
+                //        await CreateFolderLevelAsync(teamSites[key], path,i,j);
+                //    }
+                //}
             }
         }
 
-        private static async Task<string> CreateFolderLevelAsync(SharepointIds sp, string path, int l1, int l2)
+        private static async Task<string> CreateSingleFileAsync(SharepointIds sp, string path, int l1, int l2)
         {
-            DriveItem createdFolder;
-            var driveItem = new DriveItem
+            try
             {
-                Name = (l1==1&& l2==1)? $"Folder{l1:D2}":$"Folder{l1:D2}L{l2:D2}",
-                Folder = new Folder
+                DriveItem createdFolder;
+                var driveItem = new DriveItem
                 {
-                },
-                AdditionalData = new Dictionary<string, object>()
+                    Name = (l1 == 1 && l2 == 1) ? $"Folder{l1:D2}" : $"Folder{l1:D2}L{l2:D2}",
+                    Folder = new Folder
+                    {
+                    },
+                    AdditionalData = new Dictionary<string, object>()
                 {
                     {"@microsoft.graph.conflictBehavior", "replace"}
                 }
-            };
-            if (string.IsNullOrEmpty(path))
-            {
-                driveItem.Name = "General";
-                createdFolder = await graphClient.Sites[sp.SiteId]
-                .Drive.Root.Children.Request()
-                .AddAsync(driveItem);
-            }
-            else
-            {
-                createdFolder = await graphClient.Sites[sp.SiteId]
-                    .Drive.Root.ItemWithPath(path)
-                    .Children
-                    .Request()
+                };
+                if (string.IsNullOrEmpty(path))
+                {
+                    driveItem.Name = "General";
+                    createdFolder = await graphClient.Sites[sp.SiteId]
+                    .Drive.Root.Children.Request()
                     .AddAsync(driveItem);
+                }
+                else
+                {
+                    createdFolder = await graphClient.Sites[sp.SiteId]
+                        .Drive.Root.ItemWithPath(path)
+                        .Children
+                        .Request()
+                        .AddAsync(driveItem);
+                }
+                path = $"{createdFolder.ParentReference.Path.Split(':')[1]}/{createdFolder.Name}";
+                await UploadSmallFile(sp, path, 1);
+                
             }
-            path = $"{createdFolder.ParentReference.Path.Split(':')[1]}/{createdFolder.Name}";
-
-            var source = new Source()
+            catch (Exception ex)
             {
-                ActType = currentActivity,
-                ResType = Source.ResourceType.Folder,
-                OrgActionDate = createdFolder.CreatedDateTime.Value.UtcDateTime,
-                Message = $"New Folder Created {createdFolder.WebUrl} on {createdFolder.CreatedDateTime.Value.UtcDateTime}"
-            };
-            await DbOperations.UpdateSourcesAsync(source);
-            if (showOnConsole)
-                Console.WriteLine(source.Message);
-
-            await Task.Delay(100);
-
-            for (int i = 1; i <= filesCount; i++)
-                await UploadSmallFile(sp, path,i);
-
-            await Task.Delay(100);
-
-            for (int i = 1; i <= filesCount; i++)
-                await CheckOutInFile(sp, path, i);
-
-            await Task.Delay(100);
-
-            for (int i = 1; i <= filesCount; i++)
-                await RenameFile(sp, path, i);
-
-            await Task.Delay(5000);
-
-            for (int i = 1; i <= filesCount; i++)
-                await DeleteFile(sp, path, i);
-
+                Console.WriteLine(ex.Message);
+            }
             return path;
+
+        }
+        private static async Task<string> CreateFolderLevelAsync(SharepointIds sp, string path, int l1, int l2)
+        {
+            try
+            {
+                DriveItem createdFolder;
+                var driveItem = new DriveItem
+                {
+                    Name = (l1 == 1 && l2 == 1) ? $"Folder{l1:D2}" : $"Folder{l1:D2}L{l2:D2}",
+                    Folder = new Folder
+                    {
+                    },
+                    AdditionalData = new Dictionary<string, object>()
+                {
+                    {"@microsoft.graph.conflictBehavior", "replace"}
+                }
+                };
+                if (string.IsNullOrEmpty(path))
+                {
+                    driveItem.Name = "General";
+                    createdFolder = await graphClient.Sites[sp.SiteId]
+                    .Drive.Root.Children.Request()
+                    .AddAsync(driveItem);
+                }
+                else
+                {
+                    createdFolder = await graphClient.Sites[sp.SiteId]
+                        .Drive.Root.ItemWithPath(path)
+                        .Children
+                        .Request()
+                        .AddAsync(driveItem);
+                }
+                path = $"{createdFolder.ParentReference.Path.Split(':')[1]}/{createdFolder.Name}";
+
+                var source = new Source()
+                {
+                    ActType = currentActivity,
+                    ResType = Source.ResourceType.Folder,
+                    OrgActionDate = createdFolder.CreatedDateTime.Value.UtcDateTime,
+                    Message = $"New Folder Created {createdFolder.WebUrl} on {createdFolder.CreatedDateTime.Value.UtcDateTime}"
+                };
+                await DbOperations.UpdateSourcesAsync(source);
+                if (showOnConsole)
+                    Console.WriteLine(source.Message);
+
+                await Task.Delay(100);
+
+                for (int i = 1; i <= filesCount; i++)
+                    await UploadSmallFile(sp, path, i);
+
+                await Task.Delay(100);
+
+                for (int i = 1; i <= filesCount; i++)
+                    await CheckOutInFile(sp, path, i);
+
+                await Task.Delay(100);
+
+                for (int i = 1; i <= filesCount; i++)
+                    await RenameFile(sp, path, i);
+
+                await Task.Delay(5000);
+
+                for (int i = 1; i <= filesCount; i++)
+                    await DeleteFile(sp, path, i);
+            }catch(Exception ex)
+            {
+                Console.WriteLine(ex.Message);
+            }
+            return path;
+
         }
 
         private static async Task RenameFile(SharepointIds sp, string path, int i)
@@ -265,20 +362,55 @@ namespace TeamsBulkCreation
 
             await DbOperations.ClearSourcesAsync();
         }
+        private static async Task GetTeams()
+        {
 
-        private static async Task LogTeamsAsync(int limit)
+
+            var deltaCollection = await graphClient.Groups
+                               .Request()
+                               .Filter("resourceProvisioningOptions/Any(x:x eq 'Team')")
+                               .Select("id,displayName,CreatedDateTime")
+                               .GetAsync();
+            foreach (Group team in deltaCollection)
+            {
+                allTeams.Add(team);
+            }
+            while (deltaCollection.AdditionalData.ContainsKey("@odata.nextLink")
+                    && deltaCollection.AdditionalData["@odata.nextLink"] != null)
+            {
+                var nextLink = deltaCollection.AdditionalData["@odata.nextLink"].ToString();
+                deltaCollection.InitializeNextPageRequest(graphClient, nextLink);
+                deltaCollection = await deltaCollection.NextPageRequest
+                    .GetAsync();
+
+                foreach (Group team in deltaCollection)
+                {
+                    allTeams.Add(team);
+                }
+            }
+
+        }
+        private static void LogTeams(int limit)
         {
             try
             {
-                var teams = await graphClient.Groups
-                    .Request()
-                    .Filter("resourceProvisioningOptions/Any(x:x eq 'Team')")
-                    .Select("id,displayName,visibility,CreatedDateTime")
-                    .Top(limit)
-                    .GetAsync();
+                //await GetTeams();
+                //var teams = allTeams.OrderBy(o => o.CreatedDateTime).Take(limit);
 
-                foreach (var team in teams)
-                    await LogTeamAsync(team);
+                var teams = DbOperations.GetTeams(limit);//.Skip(limit*2);
+                //await LogTeamAsync("");
+                var options = new ParallelOptions()
+                {
+                    MaxDegreeOfParallelism = noOfThreads
+                };
+                Parallel.ForEach(teams, options, team =>
+                {
+                    var spid = LogTeamAsync(team.TeamId).Result;
+                    teamSites.TryAdd(team.TeamId, spid);
+
+                });
+                //foreach (var team in teams)
+                //    await LogTeamAsync(team.TeamId);
             }
             catch (Exception ex)
             {
@@ -325,34 +457,34 @@ namespace TeamsBulkCreation
             }
         }
 
-        private static async Task LogTeamAsync(Group team)
+        private static async Task<SharepointIds> LogTeamAsync(string teamId)
         {
             try
             {
-                var item = await graphClient.Groups[team.Id]
+                var item = await graphClient.Groups[teamId]
                     .Drive
                     .Request()
-                    .Select("SharepointIds,WebUrl")
+                    .Select("Id,SharepointIds,WebUrl")
                     .GetAsync();
 
 
-                var source = new Source()
-                {
-                    ActType = Source.Activity.Added,
-                    ResType = Source.ResourceType.Team,
-                    OrgActionDate = team.CreatedDateTime.Value.UtcDateTime,
-                    Message = $"New Team Created {team.DisplayName} on {team.CreatedDateTime.Value.UtcDateTime}"
-                };
-                await DbOperations.UpdateSourcesAsync(source);
-
-                teamSites.Add(team.Id, item.SharePointIds);
-                if (showOnConsole)
-                    Console.WriteLine(source.Message);
-                trials = 100;
+                //var source = new Source()
+                //{
+                //    ActType = Source.Activity.Added,
+                //    ResType = Source.ResourceType.Team,
+                //    OrgActionDate = team.CreatedDateTime.Value.UtcDateTime,
+                //    Message = $"New Team Created {team.DisplayName} on {team.CreatedDateTime.Value.UtcDateTime}"
+                //};
+                //await DbOperations.UpdateSourcesAsync(source);
+                return item.SharePointIds;
+                //if (showOnConsole)
+                //    Console.WriteLine(source.Message);
+                //trials = 100;
             }
             catch (Exception ex)
             {
                 Console.WriteLine(ex.Message);
+                return null;
                 //Thread.Sleep(2000);
                 //trials--;
                 //await LogTeamAsync(team);
@@ -362,14 +494,14 @@ namespace TeamsBulkCreation
 
         private static async Task CreateTeamsAsync()
         {
+            for (int i = startTeamId; i <= teamsRequestedCount; i++)
+            {
+                await NewTeamAsync($"Public {i:D3}", TeamVisibilityType.Public);
+            }
             //for (int i = startTeamId; i < teamsRequestedCount; i++)
             //{
-            //    await NewTeamAsync($"Public {i:D3}", TeamVisibilityType.Public);
+            //    await NewTeamAsync($"Private {i:D3}", TeamVisibilityType.Private);
             //}
-            for (int i = startTeamId; i < teamsRequestedCount; i++)
-            {
-                await NewTeamAsync($"Private {i:D3}", TeamVisibilityType.Private);
-            }
         }
 
         private static async Task NewTeamAsync(string name, TeamVisibilityType visibilityType)

@@ -4,14 +4,16 @@ using DeltaQuery;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 namespace DeltaQuery.Migrations
 {
     [DbContext(typeof(SyncDbContext))]
-    partial class SyncDbContextModelSnapshot : ModelSnapshot
+    [Migration("20210330140306_performance2")]
+    partial class performance2
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -30,9 +32,6 @@ namespace DeltaQuery.Migrations
 
                     b.Property<int>("AverageSyncDuration")
                         .HasColumnType("int");
-
-                    b.Property<long>("AvgDuration")
-                        .HasColumnType("bigint");
 
                     b.Property<DateTime>("CompletedOn")
                         .HasColumnType("datetime2");
@@ -146,23 +145,6 @@ namespace DeltaQuery.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("Sources");
-                });
-
-            modelBuilder.Entity("DeltaQuery.TeamTable", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<DateTime>("CreatedDateTime")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("TeamId")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("TeamsTable");
                 });
 #pragma warning restore 612, 618
         }
