@@ -15,11 +15,22 @@ namespace DeltaQuery
         public DbSet<Source> Sources { get; set; }
         public DbSet<Performance> Performances { get; set; }
         public DbSet<TeamTable> TeamsTable { get; set; }
+        public DbSet<Exceptions> Exceptions { get; set; }
 
         protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
         {
             optionsBuilder.UseSqlServer(@"Data Source=(LocalDb)\MSSQLLocalDB;Initial Catalog=SyncDb;Integrated Security=SSPI;AttachDBFilename=C:\Users\mmoustafa\AppData\Local\Microsoft\Microsoft SQL Server Local DB\Instances\MSSQLLocalDB\SyncDb.mdf");
         }
+    }
+    public class Exceptions
+    {
+        [Key]
+        public Guid Id { get; set; }
+        public string Method { get; set; }
+        public string Exception { get; set; }
+        public string InnerException { get; set; }
+        public string StackTrace { get; set; }
+        public DateTime CreatedDateTime { get; set; }
     }
     public class TeamTable
     {
@@ -132,6 +143,14 @@ namespace DeltaQuery
                 await context.SaveChangesAsync();
             }
         }
+        public static async Task AddExceptionsAsync(IList<Exceptions> exceptions)
+        {
+            using (var context = new SyncDbContext())
+            {
+                context.Exceptions.AddRange(exceptions);
+                await context.SaveChangesAsync();
+            }
+        }
 
         public static async Task ClearSourcesAsync()
         {
@@ -178,6 +197,14 @@ namespace DeltaQuery
                 }
             }
             catch { return 0; }
+        }
+
+        internal static async Task ClearTeamsTable()
+        {
+            using (var context = new SyncDbContext())
+            {
+                await context.Database.ExecuteSqlRawAsync("TRUNCATE TABLE TeamsTable");
+            }
         }
     }
 }

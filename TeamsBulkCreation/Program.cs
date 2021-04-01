@@ -30,36 +30,60 @@ namespace TeamsBulkCreation
         private static bool showOnConsole = true;
         private static ConcurrentDictionary<string, SharepointIds> teamSites = new ConcurrentDictionary<string, SharepointIds>();
         private static Source.Activity currentActivity = Source.Activity.Unknown;
-        private static int noTeams = 5000;
         private static List<Group> allTeams = new List<Group>();
-        private static int fileId = 5000;
+        private static int fileId = 1006;
+        private static int noTeams = 5000;
+        private static int pageSize = 100;
+        private static int pageNumber = 0;
         private static int noOfThreads = 4;
+        private static bool muliThreading = false;
         static async Task Main(string[] args)
         {
+            var rand = new Random();
+            fileId = rand.Next(1, int.MaxValue);
+
             var accountAuthProvider = new AccountAuthProvider();
             var appAuthProvider = new AppAuthProvider();
-            graphClient = new GraphServiceClient(appAuthProvider);
+            graphClient = new GraphServiceClient(accountAuthProvider);
             //await ClearTeamsAndSourcesAsync();
             //await CreateTeamsAsync();
             //await DbOperations.ClearSourcesAsync();
-            LogTeams(noTeams);
+            await LogTeamsAsync();
             //await DeleteTeamGeneralFolderAsync("/General");
             //graphClient = new GraphServiceClient(accountAuthProvider);
-            CreateTeamMutiThreadFolders();
+            await CreateTeamMutiThreadFoldersAsync();
             //await CreateTeamFoldersAsync();
 
         }
 
-        private static void CreateTeamMutiThreadFolders()
+        private static async Task CreateTeamMutiThreadFoldersAsync()
         {
-            var options = new ParallelOptions()
+            while (true)
             {
-                MaxDegreeOfParallelism = noOfThreads
-            };
-            Parallel.ForEach(teamSites.Keys, options, async key =>
-            {
-                await UploadSmallFileMT(teamSites[key], "/", fileId);
-            });
+                var rand = new Random();
+                fileId = rand.Next(1, int.MaxValue);
+
+                var pages = noTeams / pageSize;
+                var options = new ParallelOptions()
+                {
+                    MaxDegreeOfParallelism = noOfThreads
+                };
+
+                for (int i = 0; i < pages; i++)
+                {
+                    IEnumerable<string> keys = teamSites.Keys.Skip(i * pageSize).Take(pageSize);
+                    if (muliThreading)
+                        Parallel.ForEach(keys, options, async key =>
+                          {
+                              await UploadSmallFileMT(teamSites[key], "/", fileId);
+                          });
+                    else
+                        foreach (var key in keys)
+                            await UploadSmallFileMT(teamSites[key], "/", fileId);
+
+                }
+                await Task.Delay(300 * 1000);
+            }
         }
         private static async Task UploadSmallFileMT(SharepointIds sp, string path, int i)
         {
@@ -390,27 +414,29 @@ namespace TeamsBulkCreation
             }
 
         }
-        private static void LogTeams(int limit)
+        private static async Task LogTeamsAsync()
         {
             try
             {
                 //await GetTeams();
                 //var teams = allTeams.OrderBy(o => o.CreatedDateTime).Take(limit);
 
-                var teams = DbOperations.GetTeams(limit);//.Skip(limit*2);
-                //await LogTeamAsync("");
+                var teams = DbOperations.GetTeams(noTeams);//.Skip(pageNumber*pageSize).Take(pageSize);
+                _ = LogTeamAsync("").Result;
                 var options = new ParallelOptions()
                 {
                     MaxDegreeOfParallelism = noOfThreads
                 };
-                Parallel.ForEach(teams, options, team =>
-                {
-                    var spid = LogTeamAsync(team.TeamId).Result;
-                    teamSites.TryAdd(team.TeamId, spid);
+                if (muliThreading)
+                    Parallel.ForEach(teams, options, team =>
+                    {
+                        var spid = LogTeamAsync(team.TeamId).Result;
+                        teamSites.TryAdd(team.TeamId, spid);
 
-                });
-                //foreach (var team in teams)
-                //    await LogTeamAsync(team.TeamId);
+                    });
+                else
+                    foreach (var team in teams)
+                        await LogTeamAsync(team.TeamId);
             }
             catch (Exception ex)
             {
