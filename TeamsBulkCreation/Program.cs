@@ -436,7 +436,10 @@ namespace TeamsBulkCreation
                     });
                 else
                     foreach (var team in teams)
-                        await LogTeamAsync(team.TeamId);
+                    {
+                        var spid = LogTeamAsync(team.TeamId).Result;
+                        teamSites.TryAdd(team.TeamId, spid);
+                    }
             }
             catch (Exception ex)
             {
