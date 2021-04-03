@@ -89,15 +89,12 @@ namespace DeltaQuery
                     var watch = new System.Diagnostics.Stopwatch();
                     watch.Start();
                     Console.WriteLine("Start Checking Changes on Team Sites...");
-                    var result=WatchTeamsSitesAsync();
-                    if (result.IsCompleted)
-                    {
+                    await WatchTeamsSitesAsync();
                         watch.Stop();
                         processTime =  (int)watch.ElapsedMilliseconds / 1000;
                         totalDuration += processTime;
-                        Console.WriteLine($"Checking Changes on Team Sites completed on {processTime} seconds");
+                        Console.WriteLine($"{DateTime.UtcNow} - Checking Changes on Team Sites completed on {processTime} seconds");
                         AddTeamSiteDeltaLinksToResources();
-                    }
                     await DbOperations.UpdateResourcesAsync(resources);
                     resources.Clear();
                     await DbOperations.AddExceptionsAsync(exceptions);
@@ -126,7 +123,12 @@ namespace DeltaQuery
                     }
                     perf.ActivitiesCalls = activitiesCalls;
                     perf.DeltaCalls = libraryDeltaCalls;
+                    perf.Duration = (int)DateTime.UtcNow.Subtract(perf.StartOn).TotalSeconds;
+                    perf.CompletedOn = DateTime.UtcNow;
                     perf.AverageSyncDuration = DbOperations.GetAverageSync();
+                    perf.TotalDuration = totalDuration;
+                    perf.NoOfRuns = noOfRuns;
+                    perf.AvgDuration = totalDuration / noOfRuns;
                     await DbOperations.UpdatePerformanceAsync(perf);
                 }
                 catch (Exception exc)
