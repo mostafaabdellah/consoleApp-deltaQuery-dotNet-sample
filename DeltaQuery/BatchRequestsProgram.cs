@@ -71,11 +71,15 @@ namespace DeltaQuery
             //var watch = new System.Diagnostics.Stopwatch();
             //watch.Start();
             //await DbOperations.ClearTeamsTable();
-            //await GetTeams();
-            //await DbOperations.AddTeamsToTable(allTeams);
-
+            
             var teams = DbOperations.GetTeams(limit);
-
+            if(teams.Count==0)
+            {
+                Console.WriteLine("Fill Teams Table");
+                await GetTeams();
+                await DbOperations.AddTeamsToTable(allTeams);
+                teams = DbOperations.GetTeams(limit);
+            }
             foreach (var team in teams)
                 teamSitesDeltaLinks.Add(team.TeamId, null);
 
@@ -92,7 +96,6 @@ namespace DeltaQuery
                     await WatchTeamsSitesAsync();
                         watch.Stop();
                         processTime =  (int)watch.ElapsedMilliseconds / 1000;
-                        totalDuration += processTime;
                         Console.WriteLine($"{DateTime.UtcNow} - Checking Changes on Team Sites completed on {processTime} seconds");
                         AddTeamSiteDeltaLinksToResources();
                     await DbOperations.UpdateResourcesAsync(resources);
@@ -126,7 +129,9 @@ namespace DeltaQuery
                     perf.Duration = (int)DateTime.UtcNow.Subtract(perf.StartOn).TotalSeconds;
                     perf.CompletedOn = DateTime.UtcNow;
                     perf.AverageSyncDuration = DbOperations.GetAverageSync();
+                    totalDuration += processTime;
                     perf.TotalDuration = totalDuration;
+                    noOfRuns++;
                     perf.NoOfRuns = noOfRuns;
                     perf.AvgDuration = totalDuration / noOfRuns;
                     await DbOperations.UpdatePerformanceAsync(perf);
@@ -195,7 +200,6 @@ namespace DeltaQuery
                         await WatchTeamSite(keys.Skip(i * batchSize).Take(batchSize).ToList());
                     }
                 }
-                noOfRuns++;
             }
             catch(Exception exc)
             {
