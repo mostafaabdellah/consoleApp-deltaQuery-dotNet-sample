@@ -97,11 +97,11 @@ namespace DeltaQuery
                         watch.Stop();
                         processTime =  (int)watch.ElapsedMilliseconds / 1000;
                         Console.WriteLine($"{DateTime.UtcNow} - Checking Changes on Team Sites completed on {processTime} seconds");
-                        AddTeamSiteDeltaLinksToResources();
-                    await DbOperations.UpdateResourcesAsync(resources);
-                    resources.Clear();
+                        //AddTeamSiteDeltaLinksToResources();
+                    //await DbOperations.UpdateResourcesAsync(resources);
+                    resources = new List<Resource>();
                     await DbOperations.AddExceptionsAsync(exceptions);
-                    exceptions.Clear();
+                    exceptions = new List<Exceptions>();
                     //processTime = (int)DateTime.UtcNow.Subtract(lastProcessTime).TotalSeconds;
                     lastProcessTime = DateTime.UtcNow;
                     var wait = interval - processTime;

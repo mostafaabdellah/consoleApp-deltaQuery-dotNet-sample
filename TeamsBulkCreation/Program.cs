@@ -108,7 +108,7 @@ namespace TeamsBulkCreation
                         OrgActionDate = createdFile.CreatedDateTime.Value.UtcDateTime,
                         Message = $"New File Created {createdFile.WebUrl} on {createdFile.CreatedDateTime.Value.UtcDateTime}"
                     };
-                    await DbOperations.UpdateSourcesAsync(source);
+                    //await DbOperations.UpdateSourcesAsync(source);
                     if (showOnConsole)
                         Console.WriteLine(source.Message);
                 }
