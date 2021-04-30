@@ -15,7 +15,7 @@ using static DeltaQuery.Resource;
 namespace DeltaQuery
 {
 
-    class BatchRequestsProgram
+    class BatchRequestsLastModifiedProgram
     {
         // The number of seconds to wait between delta queries
         private static int interval=300,processTime=0;
@@ -37,7 +37,7 @@ namespace DeltaQuery
         private static List<TeamTable> allTeams = new List<TeamTable>();
         private static bool multiThreading=false;
         private static int noOfThreads = 4;
-        private static int noTeams = 5000;
+        private static int noTeams = 50;
         private static int batchSize = 20;
         static async Task Main(string[] args)
         {
@@ -225,9 +225,8 @@ namespace DeltaQuery
                         {
                             LastSyncDate = DateTime.UtcNow.Ticks / 100000000,
                             DeltaLink = graphClient.Groups[key].Drive.Root
-                                    .Delta()
                                     .Request()
-                                    .RequestUrl + "?$select=CreatedDateTime,Deleted,File,Folder,LastModifiedDateTime,Root,SharepointIds,Size,WebUrl"
+                                    .RequestUrl + "?$select=LastModifiedDateTime"
                         };
                     var request = new HttpRequestMessage(HttpMethod.Get, teamSitesDeltaLinks[key].DeltaLink);
                     var requestStep = new BatchRequestStep($"{key}", request, null);
